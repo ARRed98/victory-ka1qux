@@ -144,6 +144,15 @@ pub(crate) fn frame_drew(frame: u64, drawn: u64) {
 
 /// Whether frame `n` is saved.
 pub(crate) fn wanted(n: u64) -> bool {
+    // RenderDoc, if loaded: a file named `rdc` in the folder asks for a
+    // capture of the frame that starts at this present.
+    if let Some(folder) = folder() {
+        crate::renderdoc::saved();
+        let rdc = folder.join("rdc");
+        if rdc.is_file() && std::fs::remove_file(&rdc).is_ok() {
+            crate::renderdoc::trigger();
+        }
+    }
     // Before the world, with `VICTORY_CAPTURE_WORLD`: every 16th frame too
     // (small pictures of menus, loading screens and title cards).
     let before_world = world_on() && n.is_multiple_of(16) && WORLD.load(std::sync::atomic::Ordering::Relaxed) == u64::MAX;

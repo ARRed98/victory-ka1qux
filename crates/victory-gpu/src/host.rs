@@ -536,6 +536,10 @@ fn create() -> windows::core::Result<Host> {
                 dred.SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
             }
         }
+        // Diagnostics: `VICTORY_RENDERDOC` loads RenderDoc, which sees only
+        // devices made after it is there.
+        #[cfg(feature = "diagnostics")]
+        crate::renderdoc::load();
         let mut device: Option<ID3D12Device> = None;
         // Diagnostics: the software adapter, on which a shader's wild access
         // is an access violation in this process (a crash report with the
@@ -1225,10 +1229,21 @@ fn timing() -> bool {
     *ON.get_or_init(|| std::env::var_os("VICTORY_GPU_TIMING").is_some())
 }
 
+/// Whether host objects are given names: with device-removed data on, or
+/// under RenderDoc, whose captures show them.
+fn names_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        dred_on()
+            || (cfg!(feature = "diagnostics") && std::env::var_os("VICTORY_RENDERDOC").is_some())
+    })
+}
+
 /// Names a host object for the device-removed report, which names the
-/// allocations a page fault hit (only with device-removed data on).
+/// allocations a page fault hit, and for RenderDoc's captures (only with
+/// one of the two on).
 pub(crate) fn name(object: &impl Interface, text: impl FnOnce() -> String) {
-    if dred_on()
+    if names_on()
         && let Ok(object) = object.cast::<ID3D12Object>()
     {
         // SAFETY: a plain call on a live object.
