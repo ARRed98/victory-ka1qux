@@ -3214,6 +3214,26 @@ impl Host {
         })
     }
 
+    /// Whether the host device is on a software adapter (WARP). Tests of
+    /// what a card does and that adapter only reports ask it.
+    #[cfg(test)]
+    pub(crate) fn software(&self) -> bool {
+        // SAFETY: plain DXGI adapter queries.
+        unsafe {
+            let luid = self.device.GetAdapterLuid();
+            let Ok(factory) = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
+            else {
+                return false;
+            };
+            let Ok(adapter) = factory.EnumAdapterByLuid::<IDXGIAdapter1>(luid) else {
+                return false;
+            };
+            adapter
+                .GetDesc1()
+                .is_ok_and(|d| d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0)
+        }
+    }
+
     /// Whether the host GPU supports the depth bounds test; logged once.
     pub(crate) fn depth_bounds(&self) -> bool {
         static BOUNDS: OnceLock<bool> = OnceLock::new();
