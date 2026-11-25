@@ -1404,8 +1404,9 @@ pub(crate) fn dred_on() -> bool {
 
 /// Indirect mesh dispatches since the last frame line: the largest group
 /// count a record asked for, and the groups asked in all (from the lists'
-/// budget buffers, a run late).
-static MESH_GROUPS: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+/// budget buffers, a run late); then the largest x an indirect dispatch in
+/// parts asked for.
+static MESH_GROUPS: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 
 /// Whether each list of a submission runs and is timed on its own, slow
 /// ones logged with their commands (`VICTORY_GPU_TIMING`, diagnostics
@@ -5602,13 +5603,15 @@ impl HostList {
             // SAFETY: the list's own mapped words, written before it runs.
             // The words after the budget hold what the clamp noted about the
             // list's last run (mesh dispatches: the largest group count
-            // asked for, the groups asked in all): taken, then zeroed.
+            // asked for, the groups asked in all; then the largest x a
+            // dispatch in parts asked for): taken, then zeroed.
             deferred.copies.push(Step::Host(Box::new(move || unsafe {
                 let words = at as *mut u32;
                 let (largest, all) = (words.add(1).read_volatile(), words.add(2).read_volatile());
                 MESH_GROUPS[0].fetch_max(u64::from(largest), Ordering::Relaxed);
                 MESH_GROUPS[1].fetch_add(u64::from(all), Ordering::Relaxed);
-                for k in 0..3 {
+                MESH_GROUPS[2].fetch_max(u64::from(words.add(3).read_volatile()), Ordering::Relaxed);
+                for k in 0..4 {
                     words.add(k).write_volatile(0);
                 }
             })));
@@ -6464,6 +6467,13 @@ impl Meter {
         tracing::info!(
             "indirect mesh dispatches: the largest group count asked for {mesh_largest} (run: at most 65535), {mesh_groups:.0} groups asked per frame"
         );
+        let parted_largest = MESH_GROUPS[2].swap(0, Ordering::Relaxed);
+        let [parted_direct, parted_indirect] = crate::draw::take_in_parts();
+        if parted_direct + parted_indirect > 0 {
+            tracing::info!(
+                "dispatches in parts of at most 65535 groups: {parted_direct} direct ones of more groups than that,                  {parted_indirect} indirect ones through the pass that makes the parts (the largest x one asked for: {parted_largest})"
+            );
+        }
         late_line(frames);
         card_clock_line(frames, ms);
         crate::shadow::back_line(frames);

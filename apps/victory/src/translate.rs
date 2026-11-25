@@ -64,6 +64,10 @@ struct Tally {
     cs_emitted: usize,
     cs_validated: usize,
     cs_pipelines: usize,
+    /// Compute programs that take the number of their first group
+    /// (`emit::USER_GROUP_BASE`: a dispatch of more groups than the host
+    /// runs in one dimension is run in parts for them).
+    cs_group_base: usize,
     /// The same for mesh programs.
     ms_programs: usize,
     ms_emitted: usize,
@@ -126,6 +130,7 @@ impl Tally {
         self.cs_emitted += other.cs_emitted;
         self.cs_validated += other.cs_validated;
         self.cs_pipelines += other.cs_pipelines;
+        self.cs_group_base += other.cs_group_base;
         self.ms_programs += other.ms_programs;
         self.ms_emitted += other.ms_emitted;
         self.ms_validated += other.ms_validated;
@@ -271,6 +276,7 @@ pub fn run(
         "             {} emitted of {} compute programs; {} validated, {} pipelines",
         t.cs_emitted, t.cs_programs, t.cs_validated, t.cs_pipelines
     );
+    println!("             {} of the compute programs take a group base", t.cs_group_base);
     println!(
         "             {} emitted of {} mesh programs; {} validated, {} pipelines",
         t.ms_emitted, t.ms_programs, t.ms_validated, t.ms_pipelines
@@ -717,6 +723,14 @@ fn check(
 ) {
     if let Some(keep) = &checks.keep {
         lock(keep).push((label(), shader.clone()));
+    }
+    if shader.stage == HwStage::Cs
+        && shader.user_data.iter().any(|u| u.root == RootType::Other(emit::USER_GROUP_BASE))
+    {
+        t.cs_group_base += 1;
+        if t.list {
+            t.lines.push(format!("{}  takes a group base", label()));
+        }
     }
     // `VICTORY_EMIT_DUMP` with `--list`: every emitted shader as a file.
     if t.list

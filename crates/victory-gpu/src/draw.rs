@@ -462,6 +462,16 @@ fn dropped(pipeline: usize) {
 /// Dispatches run on the host so far.
 static DISPATCHED: AtomicU64 = AtomicU64::new(0);
 
+/// Dispatches run in parts since the last frame line: direct ones of more
+/// groups than the host runs in one dimension, and indirect ones that went
+/// through the split pass (of which the pass knows how many asked for more,
+/// `indirect::bound_split`).
+static IN_PARTS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+pub(crate) fn take_in_parts() -> [u64; 2] {
+    [0, 1].map(|i| IN_PARTS[i].swap(0, Ordering::Relaxed))
+}
+
 pub(crate) fn dispatched() -> u64 {
     DISPATCHED.load(Ordering::Relaxed)
 }
@@ -787,7 +797,11 @@ impl State {
         dword: u32,
         memory: Option<&crate::memory::Ready>,
     ) -> u32 {
-        use victory_shader::emit::{USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS};
+        use victory_shader::emit::{USER_GROUP_BASE, USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS};
+        // Set between the parts of a large dispatch ([`group_base`]).
+        if kind == USER_GROUP_BASE {
+            return 0;
+        }
         if kind == USER_MEMORY_BASE {
             return memory.map_or(0, |m| m.base);
         }
@@ -1962,8 +1976,41 @@ impl State {
         }
         #[cfg(feature = "diagnostics")]
         list.note_op(|| self.op_text(format!("dispatch {x}x{y}x{z}"), true));
-        // SAFETY: an open list with everything set.
-        unsafe { list.list.Dispatch(x, y, z) };
+        match (x > crate::indirect::PART).then(|| group_base(p)).flatten() {
+            Some((param, dword)) => {
+                // More groups in x than the host runs in one dimension: in
+                // parts, each told the number of its first group.
+                IN_PARTS[0].fetch_add(1, Ordering::Relaxed);
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    tracing::info!(
+                        x,
+                        parts = x.div_ceil(crate::indirect::PART),
+                        "a dispatch of more groups in x than the host runs in one dimension is run in parts"
+                    )
+                });
+                // SAFETY: an open list with everything set; the parameter
+                // and dword are the pipeline's.
+                unsafe {
+                    for (base, groups) in crate::indirect::dispatch_parts(x) {
+                        list.list.SetComputeRoot32BitConstant(param, base, dword);
+                        list.list.Dispatch(groups, y, z);
+                    }
+                    list.list.SetComputeRoot32BitConstant(param, 0, dword);
+                }
+            }
+            _ => {
+                if x > crate::indirect::PART {
+                    once!(
+                        x,
+                        pipeline = format_args!("{:#x}", self.pipeline),
+                        "a dispatch of more groups in x than the host runs in one dimension, by a program that cannot be run in parts: the host gets it as it is"
+                    );
+                }
+                // SAFETY: an open list with everything set.
+                unsafe { list.list.Dispatch(x, y, z) }
+            }
+        }
         DISPATCHED.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -2607,6 +2654,19 @@ impl State {
         const WINDOW_USE: usize = usize::MAX - 0x77;
         let offset = args.offset(arguments);
         let clamped = crate::indirect::clamp_enabled();
+        // A dispatch by a program that takes the number of its first group
+        // may ask for more groups in x than the host runs in one dimension.
+        // Its records are made into parts by the clamp's pass (with the
+        // clamp's limits; without the clamp, with only the cut into parts),
+        // and each part is run on its own, told where it begins: with the
+        // clamp on or off, for as many records as the title gives.
+        let parts = if kind == DISPATCH {
+            group_base(p).and_then(|base| {
+                host_signature(DISPATCH, crate::indirect::SPLIT_STRIDE).map(|signature| (base, signature))
+            })
+        } else {
+            None
+        };
         let (exec_buf, at) = if !clamped {
             let count_off = counter.as_ref().map(|(s, at)| s.offset(*at));
             if crate::indirect::validate_layout((kind, stride, max), offset, count_off).is_none() {
@@ -2617,8 +2677,26 @@ impl State {
             if let Some((s, at)) = &counter {
                 s.refresh(list, *at, 4);
             }
-            crate::indirect::wait_direct(list);
-            (args.buffer.clone(), offset)
+            if parts.is_some() {
+                let count_arg = counter.as_ref().map(|(s, at)| (&s.buffer, s.offset(*at)));
+                let Some(bounded) = crate::indirect::bound_split(
+                    list,
+                    (&args.buffer, offset),
+                    count_arg,
+                    (stride, max),
+                    false,
+                ) else {
+                    why("not split into parts (no pass, or arguments not 4-byte aligned)");
+                    return false;
+                };
+                // The pass bound a compute pipeline of its own.
+                self.host_pipeline = 0;
+                self.host_roots[1] = 0;
+                (bounded, 0)
+            } else {
+                crate::indirect::wait_direct(list);
+                (args.buffer.clone(), offset)
+            }
         } else {
             let windowed = windows()
                 && kind != DISPATCH
@@ -2683,7 +2761,15 @@ impl State {
                     let count_arg = counter.as_ref().map(|(s, at)| (&s.buffer, s.offset(*at)));
                     // More than the record asked for: a window clamped ahead,
                     // whose unfilled slots must not spend the list's budget.
-                    let bounded = if windowed && records > 1 {
+                    let bounded = if parts.is_some() {
+                        crate::indirect::bound_split(
+                            list,
+                            (&args.buffer, offset),
+                            count_arg,
+                            (step, records),
+                            true,
+                        )
+                    } else if windowed && records > 1 {
                         crate::indirect::bound_ahead(
                             list,
                             (&args.buffer, offset),
@@ -2723,8 +2809,10 @@ impl State {
             DISPATCH => self.bind(list, p, true),
             _ => false,
         };
+        // Whether the arguments the host runs are a scratch buffer of ours.
+        let scratch = clamped || parts.is_some();
         if !ran {
-            if clamped {
+            if scratch {
                 crate::indirect::done(list, &exec_buf);
             }
             why("prepare failed");
@@ -2740,19 +2828,37 @@ impl State {
         // SAFETY: an open list with everything set; the argument/scratch buffer
         // and host copies are kept alive by the list, and the signature is cached.
         unsafe {
-            list.list.ExecuteIndirect(
-                &signature,
-                max,
-                &exec_buf,
-                at,
-                counter.as_ref().map(|(s, _)| &s.buffer),
-                counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
-            )
+            if let Some(((param, dword), split)) = &parts {
+                // One run per part, over all the records: part `n` is the
+                // `n`th record of each, and begins at group `n * PART`.
+                IN_PARTS[1].fetch_add(1, Ordering::Relaxed);
+                for part in 0..crate::indirect::SPLIT {
+                    list.list.SetComputeRoot32BitConstant(*param, part * crate::indirect::PART, *dword);
+                    list.list.ExecuteIndirect(
+                        split,
+                        max,
+                        &exec_buf,
+                        u64::from(part) * crate::indirect::PART_BYTES,
+                        counter.as_ref().map(|(s, _)| &s.buffer),
+                        counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
+                    );
+                }
+                list.list.SetComputeRoot32BitConstant(*param, 0, *dword);
+            } else {
+                list.list.ExecuteIndirect(
+                    &signature,
+                    max,
+                    &exec_buf,
+                    at,
+                    counter.as_ref().map(|(s, _)| &s.buffer),
+                    counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
+                )
+            }
         };
         if kind == MESH {
             self.mesh_scissor(list, false);
         }
-        if clamped {
+        if scratch {
             crate::indirect::done(list, &exec_buf);
         }
         if kind == DISPATCH {
@@ -2762,6 +2868,23 @@ impl State {
         }
         true
     }
+}
+
+/// Where a compute pipeline's program takes the number of its first thread
+/// group (`victory_shader::emit::USER_GROUP_BASE`): the root parameter of
+/// its user data and the dword in it. `None` for any other pipeline, and for
+/// all of them with `VICTORY_DISPATCH_PARTS=0` (no dispatch is then run in
+/// parts: the host gets the counts as the title gave them, or clamped).
+fn group_base(p: &crate::pipeline::host::HostPipeline) -> Option<(u32, u32)> {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("VICTORY_DISPATCH_PARTS").is_none_or(|v| v != "0")) {
+        return None;
+    }
+    let stage = p.stages.first().filter(|_| p.compute)?;
+    let (param, _) = stage.user_data?;
+    let base = RootType::Other(victory_shader::emit::USER_GROUP_BASE);
+    let word = stage.translated().host.user_data.iter().find(|u| u.root == base)?;
+    Some((param, word.index))
 }
 
 /// The host command signature for one argument of `kind` with records
