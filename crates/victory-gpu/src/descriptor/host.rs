@@ -508,7 +508,7 @@ pub(crate) fn view_fates() -> String {
     format!(
         "{} (of no elements {}, raw ones not on 16 bytes {}); buffer views left null off their copy's \
          elements: {} read, {} unordered; unordered structured views not on 16 bytes, left structured: {}; \
-         buffer views on a copy of their own range: {} typed, {} raw, {} structured; constant buffer          views left null as not on 256 bytes of the host's copy: {}",
+         buffer views on a copy of their own range: {} typed, {} raw, {} structured; constant buffer          views left null as not on 256 bytes of the host's copy: {}{}",
         REFUSED_VIEWS.load(std::sync::atomic::Ordering::Relaxed),
         f(FATE_NO_ELEMENTS),
         f(FATE_RAW_OFF_16),
@@ -519,6 +519,7 @@ pub(crate) fn view_fates() -> String {
         f(FATE_OWN_RAW),
         f(FATE_OWN_STRUCTURED),
         f(FATE_CONSTANT_OFF_256),
+        crate::shadow::stale_report(),
     )
 }
 

@@ -2462,8 +2462,15 @@ impl Shadow {
                     *at = now;
                 }
                 run.get_or_insert(page);
-            } else if let Some(first) = run.take() {
-                bytes += self.copy((first * PAGE).max(from), (page * PAGE).min(to));
+            } else {
+                if let Some(first) = run.take() {
+                    bytes += self.copy((first * PAGE).max(from), (page * PAGE).min(to));
+                }
+                // Diagnostics: is a page the tracking calls unchanged the
+                // title's page?
+                if stale_check() != 0 && page * PAGE >= from && (page + 1) * PAGE <= to && self.stale_page(page) {
+                    bytes += self.copy(page * PAGE, (page + 1) * PAGE);
+                }
             }
         }
         // Cut to the range: next to it shaders may be writing the copy.
@@ -2471,6 +2478,45 @@ impl Shadow {
             bytes += self.copy((first * PAGE).max(from), ((last + 1) * PAGE).min(to));
         }
         bytes
+    }
+
+    /// `VICTORY_STALE_CHECK` (diagnostics): whether the copy's bytes of
+    /// `page`, which the write tracking says the title has not written since
+    /// they were copied, differ from the title's. Counted in [`STALE`], the
+    /// first ones of each copy logged; true if the page is to be copied
+    /// (`VICTORY_STALE_CHECK=fix`).
+    fn stale_page(&self, page: usize) -> bool {
+        let (start, end) = (self.start as usize, (self.start + self.len) as usize);
+        let (from, to) = ((page * PAGE).max(start), ((page + 1) * PAGE).min(end));
+        if from >= to {
+            return false;
+        }
+        let mut title = [0u8; PAGE];
+        crate::host::copy_mapped(title.as_mut_ptr(), from as *const u8, to - from, false);
+        // SAFETY: inside the mapping (`from` and `to` are within the buffer).
+        let ours = unsafe { std::slice::from_raw_parts(self.data.add(from - start), to - from) };
+        STALE[0].fetch_add(1, Ordering::Relaxed);
+        if ours == &title[..to - from] {
+            return false;
+        }
+        let nth = STALE[1].fetch_add(1, Ordering::Relaxed);
+        let zeros = ours.iter().all(|&b| b == 0);
+        if zeros {
+            STALE[2].fetch_add(1, Ordering::Relaxed);
+        }
+        if nth < 24 || nth.is_power_of_two() {
+            let first = ours.iter().zip(&title).position(|(a, b)| a != b).unwrap_or(0);
+            tracing::warn!(
+                nth,
+                page = format_args!("{:#x}", page * PAGE),
+                copy = format_args!("{:#x}+{:#x}", self.start, self.len),
+                first_difference = first,
+                differing = ours.iter().zip(&title).filter(|(a, b)| a != b).count(),
+                copy_all_zeros = zeros,
+                "a page the write tracking calls unchanged differs from the title's"
+            );
+        }
+        stale_check() == 2
     }
 
     /// Copies title memory `[from, to)`, cut to the buffer, into the copy.
@@ -3313,4 +3359,40 @@ fn full_refresh() -> bool {
         }
         on
     })
+}
+
+/// `VICTORY_STALE_CHECK`: pages compared, pages that differed, and of those
+/// the ones the copy held as zeros.
+static STALE: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+/// 0: off; 1 (`VICTORY_STALE_CHECK=1`): every page of a copy the write
+/// tracking calls unchanged is compared with the title's at each update and
+/// the differing ones counted; 2 (`=fix`): and copied. It reads all of a
+/// copy at every update, as `VICTORY_FULL_REFRESH=1` does.
+fn stale_check() -> u8 {
+    static ON: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("VICTORY_STALE_CHECK").ok().as_deref() {
+        None | Some("0") | Some("") => 0,
+        Some("fix") => {
+            tracing::warn!("VICTORY_STALE_CHECK=fix: pages of copies left stale are counted and copied");
+            2
+        }
+        Some(_) => {
+            tracing::warn!("VICTORY_STALE_CHECK=1: pages of copies left stale are counted");
+            1
+        }
+    })
+}
+
+/// For the frame statistics: what `VICTORY_STALE_CHECK` found so far.
+pub(crate) fn stale_report() -> String {
+    if stale_check() == 0 {
+        return String::new();
+    }
+    format!(
+        "; pages of copies the write tracking called unchanged: {} compared, {} differed from the title's ({} of them all zeros in the copy)",
+        STALE[0].load(Ordering::Relaxed),
+        STALE[1].load(Ordering::Relaxed),
+        STALE[2].load(Ordering::Relaxed),
+    )
 }
