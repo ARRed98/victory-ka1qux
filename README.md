@@ -27,7 +27,7 @@ Windows 11, Intel Core i5-13600KF, AMD Radeon RX 7800 XT 16 GB (RDNA3, driver
 | The world | drawn from a save: rooms with walls, ceilings and textures, lit by their lamps and by the sun; characters with skin, hair and clothes; exteriors with buildings; HUD and prompts |
 | Play | a 25-minute play session, from the first room on to the next objective, on an earlier build of this branch |
 | Frame rate | about 2 frames a second with the switches below: 0.40 to 0.60 s a frame, median 0.50 s; about 3.5 with victory-fork's speed defaults (median 0.29 s), at the cost of the characters' colours |
-| Stability | no crash and no device removal in the last thirteen runs (5 to 25 minutes each) |
+| Stability | no crash and no device removal in the last twelve runs (5 to 25 minutes each) |
 | Memory | about 11 GB of the card's 16 and 6 GB of the PC's memory shared with it (13.7 and 14.9 GB before the texture fix below) |
 
 Known problems:
