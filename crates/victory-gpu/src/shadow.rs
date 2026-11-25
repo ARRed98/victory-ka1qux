@@ -2403,6 +2403,15 @@ impl Shadow {
     /// [`Shadow::update`] of `[from, to)` (inside the buffer) where no
     /// shader writes.
     fn update_free(&self, from: usize, to: usize) -> usize {
+        // Diagnostics: `VICTORY_FULL_REFRESH=1` copies the whole range every
+        // time, whatever the write tracking says. The tracking sees writes
+        // at the address a copy was taken from, not those through other
+        // views of the same physical pages; this tells whether what is
+        // missing from the picture is a copy left stale that way.
+        if full_refresh() {
+            self.copy(from, to);
+            return to - from;
+        }
         if self.watched.load(Ordering::Relaxed) != NOT_WATCHED {
             if let Some((now, written)) = crate::watch::writes(from, to, true) {
                 self.watched.store(1, Ordering::Relaxed);
@@ -3291,4 +3300,17 @@ pub(crate) fn near(va: u64) -> String {
         ));
     }
     text
+}
+
+/// Whether every update of a copy copies its whole range
+/// (`VICTORY_FULL_REFRESH=1`, diagnostics; see [`Shadow::update`]).
+fn full_refresh() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("VICTORY_FULL_REFRESH").is_some_and(|v| v != "0");
+        if on {
+            tracing::warn!("VICTORY_FULL_REFRESH=1: every copy of title memory is copied whole at each update");
+        }
+        on
+    })
 }

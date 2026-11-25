@@ -485,6 +485,43 @@ pub(crate) fn is_texture_view(view: &View) -> bool {
 /// ([`buffer_view_ok`]), since the start.
 pub(crate) static REFUSED_VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// What became of buffer views that did not fit the host copy of their
+/// memory as they were, since the start (see [`view_fates`] for the order).
+static VIEW_FATES: [std::sync::atomic::AtomicU64; 9] = [const { std::sync::atomic::AtomicU64::new(0) }; 9];
+const FATE_NO_ELEMENTS: usize = 0;
+const FATE_RAW_OFF_16: usize = 1;
+const FATE_OWN_TYPED: usize = 2;
+const FATE_OWN_RAW: usize = 3;
+const FATE_OWN_STRUCTURED: usize = 4;
+const FATE_UNORDERED_OFF_ELEMENT: usize = 5;
+const FATE_UNORDERED_STRUCTURED: usize = 6;
+const FATE_OFF_ELEMENT: usize = 7;
+const FATE_CONSTANT_OFF_256: usize = 8;
+
+fn fate(which: usize) {
+    VIEW_FATES[which].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// [`REFUSED_VIEWS`] and [`VIEW_FATES`] for the frame statistics.
+pub(crate) fn view_fates() -> String {
+    let f = |i: usize| VIEW_FATES[i].load(std::sync::atomic::Ordering::Relaxed);
+    format!(
+        "{} (of no elements {}, raw ones not on 16 bytes {}); buffer views left null off their copy's \
+         elements: {} read, {} unordered; unordered structured views not on 16 bytes, left structured: {}; \
+         buffer views on a copy of their own range: {} typed, {} raw, {} structured; constant buffer          views left null as not on 256 bytes of the host's copy: {}",
+        REFUSED_VIEWS.load(std::sync::atomic::Ordering::Relaxed),
+        f(FATE_NO_ELEMENTS),
+        f(FATE_RAW_OFF_16),
+        f(FATE_OFF_ELEMENT),
+        f(FATE_UNORDERED_OFF_ELEMENT),
+        f(FATE_UNORDERED_STRUCTURED),
+        f(FATE_OWN_TYPED),
+        f(FATE_OWN_RAW),
+        f(FATE_OWN_STRUCTURED),
+        f(FATE_CONSTANT_OFF_256),
+    )
+}
+
 /// Whether the host device is gone, and why (the first time it is asked
 /// after that): for passes that make many views, to name the one that did
 /// it.
@@ -1546,13 +1583,58 @@ fn shader_buffer_words(view: &View) -> Option<&[u32; 10]> {
 /// bytes a run, #62). Such a view is made on a copy of its own range
 /// instead ([`crate::shadow::exact`]), where it begins at element 0; it was
 /// left null, and shaders read zeros.
+///
+/// So is a view of untyped bytes that is on an element but not on 16 bytes
+/// of the copy, where the host's raw views begin ([`off_raw`]).
 fn off_element(offset: u64, desc: &D3D12_SHADER_RESOURCE_VIEW_DESC) -> bool {
+    own_copy(offset, desc).is_some()
+}
+
+/// Why a shader buffer view needs a copy of its own range
+/// ([`off_element`]), as the index of its count in [`VIEW_FATES`].
+fn own_copy(offset: u64, desc: &D3D12_SHADER_RESOURCE_VIEW_DESC) -> Option<usize> {
     // SAFETY: a buffer view's union member.
     let b = unsafe { desc.Anonymous.Buffer };
     let window = desc.Format == DXGI_FORMAT_UNKNOWN
         && raw_window(offset, b.FirstElement, b.NumElements, b.StructureByteStride).is_some();
     let element = element_size(desc);
-    !window && element != 0 && !offset.is_multiple_of(element)
+    if window || element == 0 {
+        return None;
+    }
+    if !offset.is_multiple_of(element) {
+        return Some(FATE_OWN_TYPED);
+    }
+    off_raw(offset, desc)
+}
+
+/// A view of untyped bytes (a raw view of the title's, or a structured one
+/// of whole dwords, which translated shaders read as raw bytes) that
+/// begins on an element of its memory's copy but not on 16 bytes of it.
+/// The host's raw views begin on 16 bytes and the console's anywhere, so
+/// the title's raw view was refused ([`buffer_view_ok`]) and left null,
+/// 440 to 2,249 of them a run on a Radeon RX 7800 XT depending on where the
+/// title's allocations fell, and the structured one stayed structured,
+/// through which raw reads are not the bytes ([`raw_window`]). On a copy of
+/// its own range either begins at byte 0 and is a raw view.
+fn off_raw(offset: u64, desc: &D3D12_SHADER_RESOURCE_VIEW_DESC) -> Option<usize> {
+    // SAFETY: a buffer view's union member.
+    let b = unsafe { desc.Anonymous.Buffer };
+    let element = element_size(desc);
+    let start = b.FirstElement.checked_mul(element)?.checked_add(offset)?;
+    if start.is_multiple_of(16) || b.NumElements == 0 {
+        return None;
+    }
+    let raw = b.Flags.0 & D3D12_BUFFER_SRV_FLAG_RAW.0 != 0 && b.StructureByteStride == 0;
+    let structured = desc.Format == DXGI_FORMAT_UNKNOWN
+        && b.StructureByteStride > 0
+        && (u64::from(b.NumElements) * element).is_multiple_of(4);
+    if raw && desc.Format == DXGI_FORMAT_R32_TYPELESS {
+        Some(FATE_OWN_RAW)
+    } else if structured {
+        Some(FATE_OWN_STRUCTURED)
+    } else {
+        None
+    }
 }
 
 /// [`buffer_range`] of an unordered access view of memory at `base`.
@@ -1644,7 +1726,8 @@ fn buffer_srv(
     let mut offset = shadow.offset(address);
     // Off the copy's elements: on a copy of the view's own range, from its
     // element 0 (see `off_element`; `buffer_copy` names the same copy).
-    if off_element(offset, &desc) {
+    if let Some(why) = own_copy(offset, &desc) {
+        fate(why);
         let element = element_size(&desc);
         // SAFETY: a buffer view's union member.
         let buffer = unsafe { &mut desc.Anonymous.Buffer };
@@ -1673,6 +1756,7 @@ fn buffer_srv(
     let buffer = unsafe { &mut desc.Anonymous.Buffer };
     if window.is_none() {
         if element == 0 || offset % element != 0 {
+            fate(FATE_OFF_ELEMENT);
             once!(
                 offset,
                 element,
@@ -1688,6 +1772,11 @@ fn buffer_srv(
     let width = unsafe { shadow.buffer.GetDesc() }.Width;
     if !buffer_view_ok(desc.Format, first, count, stride, raw, width) {
         REFUSED_VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count == 0 {
+            fate(FATE_NO_ELEMENTS);
+        } else if raw && !first.is_multiple_of(4) {
+            fate(FATE_RAW_OFF_16);
+        }
         once!(
             format = desc.Format.0,
             first,
@@ -1751,8 +1840,12 @@ fn buffer_uav(
         buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
     } else {
         if element == 0 || offset % element != 0 {
+            fate(FATE_UNORDERED_OFF_ELEMENT);
             once!(offset, element, "unordered buffer view not on an element of its host copy");
             return None;
+        }
+        if buffer.StructureByteStride > 0 {
+            fate(FATE_UNORDERED_STRUCTURED);
         }
         buffer.FirstElement += offset / element;
     }
@@ -1768,6 +1861,11 @@ fn buffer_uav(
     let width = unsafe { shadow.buffer.GetDesc() }.Width;
     if !buffer_view_ok(desc.Format, first, count, stride, raw, width) {
         REFUSED_VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count == 0 {
+            fate(FATE_NO_ELEMENTS);
+        } else if raw && !first.is_multiple_of(4) {
+            fate(FATE_RAW_OFF_16);
+        }
         once!(
             format = desc.Format.0,
             first,
@@ -1938,6 +2036,7 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
             let shadow = crate::shadow::find(address, u64::from(size))?;
             let gpu = shadow.gpu(address);
             if gpu % 256 != 0 {
+                fate(FATE_CONSTANT_OFF_256);
                 once!(
                     address = format_args!("{address:#x}"),
                     "constant buffer not 256-byte aligned on the host"
@@ -2475,7 +2574,21 @@ mod tests {
         structured.Anonymous.Buffer.StructureByteStride = 20;
         assert!(!off_element(32, &structured), "a raw window");
         assert!(off_element(8, &structured), "no raw window, off its elements");
-        assert!(!off_element(40, &structured), "no raw window, on an element");
+        assert!(off_element(40, &structured), "on an element, yet not on 16 bytes: raw on its own copy");
+        assert!(!off_element(80, &structured), "a raw window again");
+        structured.Anonymous.Buffer.StructureByteStride = 10;
+        structured.Anonymous.Buffer.NumElements = 3;
+        assert!(!off_element(20, &structured), "30 bytes are not whole dwords: it stays structured");
+        // The title's own raw views: the host's begin on 16 bytes.
+        let mut raw = typed_view(DXGI_FORMAT_R32_TYPELESS, 2, 32);
+        raw.Anonymous.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        assert!(off_element(0, &raw), "8 bytes into its copy");
+        assert!(!off_element(8, &raw), "8 + 8: on 16 bytes");
+        assert!(off_element(4, &raw));
+        raw.Anonymous.Buffer.FirstElement = 0;
+        assert!(!off_element(32, &raw));
+        raw.Anonymous.Buffer.NumElements = 0;
+        assert!(!off_element(8, &raw), "of no elements: left null as before");
     }
 
     /// A typed view that begins off an element of its memory's copy is made
