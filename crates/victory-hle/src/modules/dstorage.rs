@@ -1089,6 +1089,7 @@ fn into_destination(
         first = format_args!("{:#x}", pages.first().copied().unwrap_or(0)),
         options = format_args!("{:#x}", request.options),
         unfilled = pages.contains(&0),
+        known = super::xmem::pages_known(&pages, offset, len),
         waited_ms = waited.as_millis() as u64,
         "dstorage: a destination's physical pages could not be written (unknown page or a host failure); its request fails"
     );
@@ -1134,7 +1135,9 @@ fn pages_written(pages: &[usize], offset: usize, len: usize) {
     SHOWN[0].fetch_add(1, Ordering::Relaxed);
     for (at, bytes) in runs {
         SHOWN[1].fetch_add(bytes as u64, Ordering::Relaxed);
-        victory_gpu::kernel_will_write(at, bytes);
+        // The write is done: what is returned (a hold on the guards while a
+        // write is under way) is let go at once.
+        drop(victory_gpu::kernel_will_write(at, bytes));
     }
 }
 

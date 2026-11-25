@@ -74,9 +74,15 @@ thread_local! {
 
 /// The milliseconds of every frame the pass that uploads textures picked
 /// by index takes before a shader that picks by index has asked for it
-/// (`VICTORY_EARLY_TEXTURES_MS`, 12; 0: never, as before), and the
+/// (`VICTORY_EARLY_TEXTURES_MS`, 100; 0: never, as before), and the
 /// milliseconds it may take just before a draw of the title's decoration
-/// bake (`VICTORY_BAKE_TEXTURES_MS`, 1500; 0: nothing special).
+/// bake (`VICTORY_BAKE_TEXTURES_MS`, 20000; 0: nothing special).
+///
+/// (They were 12 and 1500. On a Radeon RX 7800 XT the first bakes then ran
+/// with 8,000 to 14,000 textures still due, and the character baked first
+/// kept a black face and stained clothes for the run, while characters
+/// baked later, with the queue empty, came out right. With 100 and 20000
+/// the first ones have their skin; loading takes a little longer.)
 ///
 /// The pass ran only from the first world frame on, where it met some
 /// 24,000 slots at once and needed 60-80 frames for them. The title bakes
@@ -91,7 +97,7 @@ fn early_budgets() -> (u64, u64) {
         let ms = |name: &str, default: u64| {
             std::env::var(name).ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(default)
         };
-        (ms("VICTORY_EARLY_TEXTURES_MS", 12), ms("VICTORY_BAKE_TEXTURES_MS", 1500))
+        (ms("VICTORY_EARLY_TEXTURES_MS", 100), ms("VICTORY_BAKE_TEXTURES_MS", 20000))
     })
 }
 
