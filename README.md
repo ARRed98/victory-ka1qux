@@ -24,9 +24,9 @@ Windows 11, Intel Core i5-13600KF, AMD Radeon RX 7800 XT 16 GB (RDNA3, driver
 |---|---|
 | Boot, menus, saves | work (as upstream) |
 | Getting into the world | about 3 minutes from launch, with the caches warm and the movies skipped |
-| The world | drawn from a save: rooms with walls, ceilings and textures, lit by their lamps and by the sun; characters with skin, hair and clothes; exteriors with buildings; HUD and prompts |
+| The world | drawn from a save: rooms with walls, ceilings and textures, lit by their lamps and by the sun; characters with hair, and with skin and clothes in some launches (see the known problems); exteriors with buildings; HUD and prompts |
 | Play | a 25-minute play session, from the first room on to the next objective, on an earlier build of this branch |
-| Frame rate | about 2 frames a second with the switches below: 0.40 to 0.60 s a frame, median 0.50 s; about 3.5 with victory-fork's speed defaults (median 0.29 s), at the cost of the characters' colours |
+| Frame rate | about 2 frames a second with the switches below: 0.40 to 0.60 s a frame, median 0.50 s; about 3.5 with victory-fork's speed defaults (median 0.29 s, one run) |
 | Stability | no crash and no device removal in the last twelve runs (5 to 25 minutes each) |
 | Memory | about 11 GB of the card's 16 and 6 GB of the PC's memory shared with it (13.7 and 14.9 GB before the texture fix below) |
 
@@ -37,6 +37,10 @@ Known problems:
   here (the builder is off).
 - The shell of the first room (walls and ceiling) is missing in the opening
   shot of some launches and is there later in the same run.
+- The characters' baked skin and clothes are right in some launches and black
+  in others (one launch of three with this build had both right, one had black
+  uniforms, one a black face too). The texture queue is empty at the bake in
+  all three, so the cause is something else and is not found yet.
 - Two of the title's compute programs do not translate, and the programs that
   only shade ray-tracing hits are left out on purpose.
 - About 2 frames a second. Roughly a third of a frame is the card; the rest is
@@ -78,8 +82,8 @@ missing in some launches and not in others):
   (ported from [myokex/victory-amd](https://github.com/myokex/victory-amd)).
 - The title bakes its characters' skin and clothes once, while it loads, from
   textures it picks by index. Before each bake the texture pass now runs until
-  nothing more is due (it took at most 4,096 slots, once): the first characters
-  baked kept black skin and stained clothes for the run.
+  nothing more is due (it took at most 4,096 slots, once). That removes one
+  cause of black skin and stained clothes; another remains (known problems).
 - The texture ring of the intro movie no longer shows its frames out of order.
 - A descriptor read only for its texture's size is answered by the host.
 
@@ -175,9 +179,9 @@ target\diag\victory.exe run "$g\<the title's exe>" --execute
 The last three lines of switches turn off victory-fork's newer speed defaults
 (sending submissions ahead of the card). Measured on this card with this build,
 they bring a frame from a median of 0.50 s down to 0.29 s (0.17 s at best),
-with no failure in a run, but the characters' uniforms then lose their colour
-(black cloth instead of orange) and skin turns greenish in places. Leave the
-three lines out if speed matters more than that.
+with no failure in the one run made with them. An earlier version of them cost
+characters their skin here, so they are off in the recommended settings until
+more runs say they are safe.
 
 Input: XInput pads; with none connected the keyboard is a pad while the
 title's window has focus. Commands, the full list of switches and debugging
