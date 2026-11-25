@@ -98,9 +98,6 @@ fn build() -> &'static [u8; 32] {
                 }
             };
         }
-        // The capped host view heap (`VICTORY_PORTABLE_HEAP`, on unless "0")
-        // changes the limit the shaders are translated for.
-        key.update(&[u8::from(victory_shader::emit::portable_heap())]);
         *key.finalize().as_bytes()
     })
 }
@@ -129,7 +126,12 @@ pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
     result
 }
 
+/// What the host GPU adds to the translation: its wave width and the null
+/// slot at the end of its view heaps (it differs by GPU, and a translation
+/// cached without the clamp, or with another one, must not be served). The
+/// slot is picked before the first key is made.
 fn target() -> [u32; 2] {
+    crate::descriptor::host::probe_view_limit();
     [
         victory_shader::emit::host_max_wave(),
         victory_shader::emit::view_heap_limit(),

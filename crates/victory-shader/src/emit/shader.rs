@@ -113,11 +113,11 @@ pub(crate) struct Geometry {
     pub max_vertices: u32,
 }
 
-/// The null slot a host view heap keeps at its end when the title's heap did not fit in it
-/// (0: no limit). Shaders translated while it is set read that slot for any view index at or
-/// past it: a host that caps its heap (NVIDIA at 1 000 000 views; a retail game's heap is
-/// larger) hung its GPU on reads past the end (GPU-based validation: "descriptor heap index
-/// out of bounds"), which AMD's driver forgives.
+/// The null slot every host view heap keeps at its end (0: no limit). Shaders translated while
+/// it is set read that slot for any view index at or past it. A read past a heap's end is
+/// undefined: a host that caps its heap (NVIDIA at 1 000 000 views; a retail game's heap is
+/// larger) hung its GPU (GPU-based validation: "descriptor heap index out of bounds"), and AMD
+/// RDNA3 took a page fault and removed the device.
 static VIEW_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// See [`VIEW_LIMIT`]: `null_slot` is the last slot of the host's view heap, kept null.
@@ -125,20 +125,7 @@ pub fn set_view_heap_limit(null_slot: u32) {
     VIEW_LIMIT.store(null_slot, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The host view heap is capped at 1 000 000 views on every GPU, as NVIDIA's
-/// driver caps it, so a view index past it reads the null slot (`VIEW_LIMIT`).
-/// AMD's driver takes the title's whole heap instead, and nothing then bounds
-/// an index: on an RX 7800 XT (driver 26.11.2) a read of view slot 2^23, far
-/// past the heap's end, page-faulted the card early in the opening cutscene
-/// (DRED: "view heap ...: 0xd200000 past its end (slot 8388608)"). With the cap
-/// it plays through to the prologue like the NVIDIA runs. `VICTORY_PORTABLE_HEAP=0`
-/// gives the whole heap back. Part of the translation: the shader cache keys on it.
-pub fn portable_heap() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("VICTORY_PORTABLE_HEAP").map_or(true, |v| v.trim() != "0"))
-}
-
-/// The null slot emitted shaders use for out-of-range heap indices.
+/// See [`VIEW_LIMIT`]: the null slot shaders translated now clamp view indices to (0: none).
 pub fn view_heap_limit() -> u32 {
     VIEW_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
 }
