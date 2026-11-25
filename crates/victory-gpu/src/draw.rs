@@ -101,8 +101,8 @@ fn early_budgets() -> (u64, u64) {
     })
 }
 
-/// The pixel shaders of the title's decoration bake (the title:
-/// `PS_BakeDecorations_*`), by the first 16 hex digits of their hash as the
+/// The pixel shaders of the title's decoration bake, by the first 16 hex
+/// digits of their hash as the
 /// frame listings print it. They draw into a 256x256 corner of 2048x2048
 /// targets and name no texture in a table.
 const BAKE_PIXEL_SHADERS: [&str; 4] =

@@ -372,7 +372,7 @@ fn on_the_card(shader: &HostShader, constants: [u32; 2]) -> Option<u32> {
 /// A 32-lane console wave. A register holds a lane mask on one path (the lanes below s0)
 /// and a number on the other, and is read as a number after the join, as the trace programs
 /// keep their lanes' masks and their node numbers on one stack
-/// (`deferred_tiled:CS_LaserLightShadowRaytracing`, s46 at 0x104, 0x75c and 0x188). The
+/// (a tiled shadow compute program of the title, s46 at 0x104, 0x75c and 0x188). The
 /// mask arrives as the ballot of its lanes.
 #[test]
 fn a_lane_mask_joined_with_a_number_is_read_as_the_number_it_is() {
@@ -403,7 +403,7 @@ fn a_lane_mask_joined_with_a_number_is_read_as_the_number_it_is() {
 
 /// A 32-lane console wave. `if (t < s0) { ... SCC = (s1 == 7) }` and a branch on SCC after
 /// the join: the skip brings the SCC of `s_and_saveexec` ("some lane is left") along
-/// (`rtdirectionalshadows:CS_RTShadowTrace32HQ_TiledFarOnly`, 0x360-0x39c). On the console
+/// (a shadow-trace compute program of the title, 0x360-0x39c). On the console
 /// the skip is taken by the wave, so with some lane inside every lane sees the inner test.
 /// A lane that skipped on its own would see "some lane is left" instead: refused per lane,
 /// right with the branch taken wave-wide. Lane 31 stores what it saw.
