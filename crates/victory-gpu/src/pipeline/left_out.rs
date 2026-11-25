@@ -9,6 +9,7 @@
 /// builder off (the default) there is no hit for them to shade. Sorted:
 /// the 348 of the programs saved from earlier runs (`VICTORY_DUMP_SHADERS`);
 /// more can be left out with `VICTORY_LEFT_OUT`.
+#[rustfmt::skip]
 pub(super) const RAY_TRACING_RESOLVES: [&str; 348] = [
     "008f3e09ac72b1e0", "015832d72477fb26", "02a4ed10c682ac3a", "02af016b81284952",
     "04d46e7934e1fe24", "04f90cb19f940759", "0512c381f84c2ae9", "05b939a0705f27ed",
@@ -111,7 +112,10 @@ mod tests {
     #[test]
     fn the_resolves_are_sorted_hashes() {
         let all = super::RAY_TRACING_RESOLVES;
-        assert!(all.windows(2).all(|w| w[0] < w[1]), "sorted and without repeats");
+        assert!(
+            all.windows(2).all(|w| w[0] < w[1]),
+            "sorted and without repeats"
+        );
         assert!(
             all.iter()
                 .all(|h| h.len() == 16 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
