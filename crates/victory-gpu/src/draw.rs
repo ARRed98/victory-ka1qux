@@ -1636,6 +1636,7 @@ impl State {
         // Slots whose texture's memory the runtime mapped, unmapped or
         // wrote since the last pass are due again.
         host.texture_slots_remapped(frame);
+        host.texture_sweep(heap, frame);
         if heap_recheck() {
             relook_textures(host, frame);
         }
@@ -1771,6 +1772,9 @@ impl State {
             // through a table: they upload it, and check it at every
             // submission that samples it.
             let tabled = crate::texture::is_staged(resource);
+            if tabled {
+                crate::texture::upload_again(resource);
+            }
             if let Some(view) = &view {
                 readable(list, sampled.kind, view);
             }
