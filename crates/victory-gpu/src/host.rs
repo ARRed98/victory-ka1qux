@@ -3214,8 +3214,11 @@ impl Host {
         })
     }
 
-    /// Whether the host device is on a software adapter (WARP). Tests of
-    /// what a card does and that adapter only reports ask it.
+    /// Whether the host device is on no card: a software adapter (WARP), or
+    /// an adapter of Microsoft's own that stands in for one on a machine
+    /// without a card (a CI runner's; it does not always carry the software
+    /// flag), or one DXGI cannot name. Tests of what a card does and those
+    /// adapters only report ask it.
     #[cfg(test)]
     pub(crate) fn software(&self) -> bool {
         // SAFETY: plain DXGI adapter queries.
@@ -3223,14 +3226,23 @@ impl Host {
             let luid = self.device.GetAdapterLuid();
             let Ok(factory) = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
             else {
-                return false;
+                return true;
             };
-            let Ok(adapter) = factory.EnumAdapterByLuid::<IDXGIAdapter1>(luid) else {
-                return false;
+            let Ok(desc) = factory
+                .EnumAdapterByLuid::<IDXGIAdapter1>(luid)
+                .and_then(|a| a.GetDesc1())
+            else {
+                return true;
             };
-            adapter
-                .GetDesc1()
-                .is_ok_and(|d| d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0)
+            let name = String::from_utf16_lossy(&desc.Description);
+            eprintln!(
+                "host adapter: {} vendor {:#x} device {:#x} flags {:#x}",
+                name.trim_end_matches(char::from(0)),
+                desc.VendorId,
+                desc.DeviceId,
+                desc.Flags
+            );
+            desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 || desc.VendorId == 0x1414
         }
     }
 
