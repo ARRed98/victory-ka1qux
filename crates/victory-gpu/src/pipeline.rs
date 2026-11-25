@@ -725,6 +725,8 @@ static FUNCTIONS: Table<24> = {
 #[cfg(windows)]
 pub(crate) mod host;
 #[cfg(windows)]
+mod left_out;
+#[cfg(windows)]
 mod library;
 #[cfg(windows)]
 mod make;
@@ -816,6 +818,9 @@ impl Prebuild {
     /// gets none.
     pub fn make(&self) -> Result<(), String> {
         library::keep_early_list();
+        if let Some(why) = make::left_out(&self.shaders) {
+            return Err(why.into());
+        }
         // Without the run's log lines per shader and pipeline: tens of
         // thousands of them would bury the pre-build's own report.
         let quiet = tracing::Dispatch::none();
