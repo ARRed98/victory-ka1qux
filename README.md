@@ -20,15 +20,17 @@ or publisher.
 Windows 11, Intel Core i5-13600KF, AMD Radeon RX 7800 XT 16 GB (RDNA3, driver
 32.0.32029.2010), 32 GB RAM. Series X profile, diagnostics build.
 
-| | |
-|---|---|
-| Boot, menus, saves | work (as upstream) |
-| Getting into the world | about 3 minutes from launch, with the caches warm and the movies skipped |
-| The world | drawn from a save: rooms with walls, ceilings and textures, lit by their lamps and by the sun; characters with skin, hair and clothes; exteriors with buildings; HUD and prompts |
-| Play | a 25-minute play session, from the first room on to the next objective, on an earlier build of this branch |
-| Frame rate | about 2 frames a second with the switches below: 0.40 s a frame at best, a median of 0.50 s over a ten-minute run and of 0.67 to 0.77 s over the first four minutes in the world, while it still streams in; about 3.5 with victory-fork's speed defaults (median 0.29 s, one run, on an earlier build) |
-| Stability | no crash and no device removal in the last twenty-four runs (4 to 25 minutes each) |
-| Memory | about 11 GB of the card's 16 and 6 GB of the PC's memory shared with it (13.7 and 14.9 GB before the texture fix below) |
+| Stage | Status | Measured |
+|---|---|---|
+| Boot, menus, saves | ✅ | work (as upstream) |
+| Getting into the world | ✅ | about 3 minutes from launch, with the caches warm and the movies skipped |
+| The world | ✅ | drawn from a save: rooms with walls, ceilings and textures, lit by their lamps and by the sun; characters with skin, hair and clothes; exteriors with buildings; HUD and prompts |
+| Light in shadow | ❌ | whatever the sun or a lamp does not reach directly is dark: the ray-traced light does not run |
+| Play | 🟡 | a 25-minute play session, from the first room on to the next objective, on an earlier build of this branch |
+| Frame rate | 🟡 | about 2 frames a second with the switches below: 0.40 s a frame at best, a median of 0.50 s over a ten-minute run and of 0.67 to 0.77 s over the first four minutes in the world, while it still streams in; about 3.5 with victory-fork's speed defaults (median 0.29 s, one run, on an earlier build) |
+| Stability | ✅ | no crash and no device removal in the last twenty-four runs (4 to 25 minutes each) |
+| Memory | ✅ | about 11 GB of the card's 16 and 6 GB of the PC's memory shared with it (13.7 and 14.9 GB before the texture fix below) |
+| Tests | ✅ | `cargo test --workspace` runs 646 tests and all pass on the test machine; the CI on `main` (clippy twice and the tests, on a machine with no card) passes |
 
 Known problems:
 
@@ -51,6 +53,20 @@ Known problems:
   preparing the frame and copying title memory to and from the card.
 - Tested on one machine only. The switches under "Running it" are the ones the
   state above was measured with.
+
+## How it works
+
+Nothing is emulated. The title's executable is a PE32+ image of x86-64 code:
+the loader maps it, applies its relocations, sets up its TLS and binds its
+imports to implementations of the console's interfaces (an HLE of the
+XGameRuntime, memory (`xmem`), DirectStorage and D3D12.X layers), so its code
+runs on the host CPU as it is. Its command lists become host D3D12 command
+lists. Its shaders are machine code for the console's RDNA2 graphics
+processor; a shader recompiler translates each program to DXIL when the title
+makes a pipeline, and caches the result. Textures are detiled from the
+console's layouts (swizzle and tiling modes) and BCPack streams are unpacked;
+audio is decoded from XMA2 and Opus; the title's Bink movies play through its
+own library. [docs/architecture.md](docs/architecture.md) has the crates.
 
 ## What this fork adds to victory-fork
 
