@@ -24,10 +24,10 @@ Windows 11, Intel Core i5-13600KF, AMD Radeon RX 7800 XT 16 GB (RDNA3, driver
 |---|---|
 | Boot, menus, saves | work (as upstream) |
 | Getting into the world | about 3 minutes from launch, with the caches warm and the movies skipped |
-| The world | drawn from a save: rooms with walls, ceilings and textures, lit by their lamps and by the sun; characters with hair, and with skin and clothes in some launches (see the known problems); exteriors with buildings; HUD and prompts |
+| The world | drawn from a save: rooms with walls, ceilings and textures, lit by their lamps and by the sun; characters with skin, hair and clothes; exteriors with buildings; HUD and prompts |
 | Play | a 25-minute play session, from the first room on to the next objective, on an earlier build of this branch |
-| Frame rate | about 2 frames a second with the switches below: 0.40 to 0.60 s a frame, median 0.50 s; about 3.5 with victory-fork's speed defaults (median 0.29 s, one run) |
-| Stability | no crash and no device removal in the last twelve runs (5 to 25 minutes each) |
+| Frame rate | about 2 frames a second with the switches below: 0.40 s a frame at best, a median of 0.50 s over a ten-minute run and of 0.67 to 0.77 s over the first four minutes in the world, while it still streams in; about 3.5 with victory-fork's speed defaults (median 0.29 s, one run, on an earlier build) |
+| Stability | no crash and no device removal in the last twenty-four runs (4 to 25 minutes each) |
 | Memory | about 11 GB of the card's 16 and 6 GB of the PC's memory shared with it (13.7 and 14.9 GB before the texture fix below) |
 
 Known problems:
@@ -35,12 +35,16 @@ Known problems:
 - Whatever the sun or a lamp does not reach directly is dark. The title fills
   shadow with ray-traced light, and its ray-tracing structures are not built
   here (the builder is off).
-- The shell of the first room (walls and ceiling) is missing in the opening
-  shot of some launches and is there later in the same run.
-- The characters' baked skin and clothes are right in some launches and black
-  in others (one launch of three with this build had both right, one had black
-  uniforms, one a black face too). The texture queue is empty at the bake in
-  all three, so the cause is something else and is not found yet.
+- Loading is slower than the title's clock. A scene starts before all of it
+  has streamed in: the shell of the first room (walls and ceiling) arrives 10
+  to 25 seconds into the opening shot, in every launch looked at. An earlier
+  version of this page called that "missing in some launches"; it was one
+  picture taken at different moments of the shot.
+- The characters' baked skin and clothes were right in 2 launches of 5 on the
+  previous build and are right in all five since victory-fork's `310c6eb`
+  and its pull requests #606 and #632 went in (below). That is still a small
+  count; `VICTORY_BAKE_PROBE=1` reads the bake's result back, and its
+  sequence of hashes was the same in the launches it was on.
 - Two of the title's compute programs do not translate, and the programs that
   only shade ray-tracing hits are left out on purpose.
 - About 2 frames a second. Roughly a third of a frame is the card; the rest is
@@ -80,10 +84,18 @@ missing in some launches and not in others):
 - Texture views are told apart by the memory their mips really take, uploads
   start at the first mip that is there, and views the queue lost are put back
   (ported from [myokex/victory-amd](https://github.com/myokex/victory-amd)).
-- The title bakes its characters' skin and clothes once, while it loads, from
-  textures it picks by index. Before each bake the texture pass now runs until
-  nothing more is due (it took at most 4,096 slots, once). That removes one
-  cause of black skin and stained clothes; another remains (known problems).
+- The title bakes its characters' skin and clothes while it loads, from
+  textures it picks by index. Before each bake the texture pass runs until
+  nothing more is due (it took at most 4,096 slots, once). That alone did not
+  settle the bakes: they came out right in 2 launches of 5. What did, as far
+  as the launches since show, came from victory-fork: its main at `310c6eb`
+  (a newer view makes an older one stale only when it starts within its first
+  4 KiB, where every neighbour of a packed texture used to be taken out of the
+  queue; a texture with a host copy is uploaded again when the card is full)
+  and its open pull requests #606 by laptopnotebook (a remap under an
+  uploaded texture uploads it again; this path marked a source of a bake in
+  each launch measured) and #632 by ryotdev (a late mapping check no longer
+  clears the view that replaced the one it looked at).
 - The texture ring of the intro movie no longer shows its frames out of order.
 - A descriptor read only for its texture's size is answered by the host.
 
@@ -126,6 +138,10 @@ missing in some launches and not in others):
   `VICTORY_FULL_REFRESH=1` (every copy copied whole at each update).
 - The frame statistics say what became of buffer views that did not fit their
   copy, how the texture queue stands, and what each bake found due.
+- `VICTORY_BAKE_PROBE=1`: for the draws of the character bake, the state of
+  every texture their data names, a second look at those some seconds later,
+  whether materials sample the bake's own target, and a read-back of what the
+  bake wrote (blocks and texels with colour, and a hash to compare launches).
 - `VICTORY_RENDERDOC=1` loads RenderDoc before the device and captures a
   frame on request.
 
@@ -144,7 +160,7 @@ out because its tests fail on this card.
 #135 (alexdeliu), #154 (BitWuehler), #169 (HailLucifer666), #186 (Vyacheslav
 Venglovsky), #191 (gdawid94), #196 (JaumeMarRib), #237 (fffluffy-dev), #282
 (t4l03), #362 (renzowit35), #438 (sennecools), #452 (MalfoyDraco99), #571
-(arminkhaleghirod), #575 (Cuebert).
+(arminkhaleghirod), #575 (Cuebert), #606 (laptopnotebook), #632 (ryotdev).
 
 ## Running it
 
