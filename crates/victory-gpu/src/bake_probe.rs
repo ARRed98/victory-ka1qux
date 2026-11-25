@@ -606,6 +606,8 @@ pub(crate) fn present(frame: u64) {
             slots_made_stale_by_a_newer_view = crate::descriptor::host::STALE[0].load(Relaxed),
             slots_made_due_by_remaps = crate::descriptor::host::STALE[3].load(Relaxed),
             made_slots_found_unmapped = crate::descriptor::host::STALE[4].load(Relaxed),
+            unmaps_refused_for_a_newer_write = crate::descriptor::host::GONE_REFUSED.load(Relaxed),
+            view_sweep_at_the_last_look = ?crate::descriptor::host::SWEPT.each_ref().map(|c| c.load(Relaxed)),
             ?class_totals,
             "bake probe: census"
         );

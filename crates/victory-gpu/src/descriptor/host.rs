@@ -374,6 +374,12 @@ static SPANNED: [std::sync::atomic::AtomicU64; 2] = [
 pub(crate) static STALE: [std::sync::atomic::AtomicU64; 5] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 5];
 
+/// Since the start: slots a pass found unmapped whose host slot it left as
+/// it was, because another write had replaced the view it looked at
+/// ([`HostHeap::texture_slot_gone`]): each was a good view that would have
+/// been made null.
+pub(crate) static GONE_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// When a view the title writes makes older views of other memory stale
 /// ([`Rule`]): where it starts in the block of their smallest levels, by
 /// default; `VICTORY_STALE_TEXTURES=0`: never, as before;
@@ -1512,6 +1518,7 @@ impl HostHeap {
         // Mirror takes the made lock before updating the texture queue.
         let mut textures = self.textures.lock().unwrap_or_else(|e| e.into_inner());
         if textures.same(index, write).is_none() {
+            GONE_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return false;
         }
         self.unmake(&mut made, index);
