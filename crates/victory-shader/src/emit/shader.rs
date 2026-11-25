@@ -164,6 +164,8 @@ pub(crate) struct Shader {
     pub flags: u64,
     /// Heap handles made with a non-uniform index.
     pub nonuniform_handles: u32,
+    /// `discard` calls emitted (what the tests count).
+    pub discards: u32,
     /// A compute shader with this thread-group size.
     pub threads: Option<[u32; 3]>,
     /// The wave size a compute shader requires (`WaveSize`).
@@ -220,6 +222,7 @@ impl Shader {
             root_uavs: Vec::new(),
             flags: 0,
             nonuniform_handles: 0,
+            discards: 0,
             threads: None,
             wave_size: None,
             lds_dwords: 0,
@@ -251,6 +254,7 @@ impl Shader {
         opcode: u32,
         args: &[V],
     ) -> V {
+        self.discards += u32::from(name == "discard");
         let mut params = vec![self.t.i32];
         params.extend(args.iter().map(|&a| self.m.type_of(a)));
         let fty = self.m.func_ty(ret, params);

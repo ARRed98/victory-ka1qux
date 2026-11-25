@@ -65,6 +65,9 @@ pub(crate) struct Lowered {
     /// Heap handles made with a non-uniform index.
     #[cfg(test)]
     pub nonuniform_handles: u32,
+    /// `discard` calls emitted.
+    #[cfg(test)]
+    pub discards: u32,
     /// Whether the program uses wave operations.
     #[cfg(test)]
     pub wave_ops: bool,
@@ -215,8 +218,13 @@ struct Lower<'a> {
     strides: HashMap<(usize, Site, u8), V>,
     /// Blocks splitting the edge from one IR block to another.
     edges: HashMap<(usize, usize), usize>,
-    /// Per IR block: a `done` export is behind every lane entering it.
+    /// Per IR block: a valid-mask (`vm`) export is behind every lane entering it.
     exported: Vec<bool>,
+    /// The program has a pixel export with the valid-mask bit. Without one
+    /// nothing in it says a pixel is killed.
+    valid_exports: bool,
+    /// Per IR block: a valid-mask export in a block it can reach.
+    valid_after: Vec<bool>,
     /// Reverse-postorder index per IR block.
     rpo: Vec<usize>,
     /// DXIL block each IR block ends in (guarded stores split blocks).
@@ -1519,6 +1527,8 @@ impl<'a> Lower<'a> {
             strides: HashMap::new(),
             edges: HashMap::new(),
             exported: vec![false; p.blocks.len()],
+            valid_exports: x.io.exports.iter().any(|e| e.vm),
+            valid_after: Vec::new(),
             rpo: vec![usize::MAX; p.blocks.len()],
             tail: vec![None; p.blocks.len()],
             writes_uavs,
@@ -2144,6 +2154,11 @@ impl<'a> Lower<'a> {
                 self.counters.insert(b, (phi, Vec::new()));
             }
         }
+        if self.s.pixel && self.valid_exports {
+            self.valid_after = self.find_valid_after();
+        } else {
+            self.valid_after = vec![false; p.blocks.len()];
+        }
         self.cur = self.s.entry;
         self.find_sections();
         self.inputs()?;
@@ -2217,6 +2232,8 @@ impl<'a> Lower<'a> {
             #[cfg(test)]
             nonuniform_handles: self.s.nonuniform_handles,
             #[cfg(test)]
+            discards: self.s.discards,
+            #[cfg(test)]
             wave_ops: self.s.flags & flags::WAVE_OPS != 0,
             dxil: self.s.finish(),
             user_data,
@@ -2225,12 +2242,40 @@ impl<'a> Lower<'a> {
     }
 
     fn exported_out(&self, b: usize) -> bool {
-        self.exported[b] || self.has_done_export(b)
+        self.exported[b] || self.has_valid_export(b)
     }
 
-    fn has_done_export(&self, b: usize) -> bool {
+    /// Block `b` holds an export with the valid-mask bit.
+    fn has_valid_export(&self, b: usize) -> bool {
         (0..self.x.p.blocks[b].insts.len())
-            .any(|i| self.exports.get(&(b, i)).is_some_and(|e| e.done))
+            .any(|i| self.exports.get(&(b, i)).is_some_and(|e| e.vm))
+    }
+
+    /// Per block: some block it can reach (a loop reaches itself) holds a
+    /// valid-mask export.
+    fn find_valid_after(&self) -> Vec<bool> {
+        let n = self.x.p.blocks.len();
+        let has: Vec<bool> = (0..n).map(|b| self.has_valid_export(b)).collect();
+        let succ = |b: usize| match self.x.st.exits[b] {
+            LaneExit::Jump(t) => vec![t],
+            LaneExit::Branch {
+                taken, not_taken, ..
+            } => vec![taken, not_taken],
+            LaneExit::End | LaneExit::Indirect => Vec::new(),
+        };
+        let mut after = vec![false; n];
+        loop {
+            let mut changed = false;
+            for b in 0..n {
+                if !after[b] && succ(b).into_iter().any(|t| has[t] || after[t]) {
+                    after[b] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                return after;
+            }
+        }
     }
 
     /// Values of the program's input registers.
@@ -10881,6 +10926,12 @@ impl<'a> Lower<'a> {
         Ok(())
     }
 
+    /// No later instruction of block `b` is an export with the valid-mask bit.
+    fn last_valid_export(&self, b: usize, i: usize) -> bool {
+        !(i + 1..self.x.p.blocks[b].insts.len())
+            .any(|j| self.exports.get(&(b, j)).is_some_and(|e| e.vm))
+    }
+
     fn export(&mut self, b: usize, i: usize) -> Result<(), Why> {
         let e = *self
             .exports
@@ -10895,13 +10946,28 @@ impl<'a> Lower<'a> {
         if let Some(g) = guard
             && !mesh
         {
-            if !(e.done && self.s.pixel) {
+            if !self.s.pixel {
                 return Err("a conditional export");
             }
-            let t = self.s.m.bool(true);
-            let kill = self.s.m.bin(c, Bin::Xor, g, t);
-            self.s
-                .op(c, "discard", Attr::NoUnwind, self.s.t.void, 82, &[kill]);
+            // Which pixels survive is EXEC at the last export that has its
+            // valid-mask bit (VM) set; an export without it leaves that mask
+            // alone, and a program with none kills no pixel. A discard cannot
+            // be undone, so the pixels outside EXEC are killed at the last
+            // such export of the block (every lane of a block runs all of it,
+            // so an earlier one is overridden), provided no later block can
+            // run another that widens EXEC again.
+            // shortcut: an export without VM under a narrower EXEC stores in
+            // the lanes inside it only; a lane outside, which the console does
+            // not write either, keeps what the host leaves in the output.
+            if e.vm && self.last_valid_export(b, i) {
+                if self.valid_after[b] {
+                    return Err("a pixel export whose valid mask a later export may widen");
+                }
+                let t = self.s.m.bool(true);
+                let kill = self.s.m.bin(c, Bin::Xor, g, t);
+                self.s
+                    .op(c, "discard", Attr::NoUnwind, self.s.t.void, 82, &[kill]);
+            }
         }
         if mesh && e.target == Target::Primitive {
             return self.emit_indices(e, guard);
@@ -11343,8 +11409,13 @@ impl<'a> Lower<'a> {
                 Term::CondBr(cond, t, f)
             }
             LaneExit::End => {
-                if self.s.pixel && !self.exported[b] && !self.has_done_export(b) {
-                    // A lane leaving without its final export was killed.
+                if self.s.pixel
+                    && self.valid_exports
+                    && !self.exported[b]
+                    && !self.has_valid_export(b)
+                {
+                    // A lane leaving without a valid-mask export was outside
+                    // EXEC at the wave's (or never got there): killed.
                     let t = self.s.m.bool(true);
                     self.s
                         .op(self.cur, "discard", Attr::NoUnwind, self.s.t.void, 82, &[t]);
