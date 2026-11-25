@@ -448,10 +448,12 @@ fn note_targets(n: u64, d: &BakeDraw) {
             );
         }
         let mut noted = NOTED.lock().unwrap_or_else(|e| e.into_inner());
-        if noted.len() < 8 && !noted.iter().any(|(r, _)| *r == t) && READ_FRAMES.load(Relaxed) < 12 {
-            if let Some(copy) = crate::resource::host_copy(t as This) {
-                noted.push((t, copy));
-            }
+        if noted.len() < 8
+            && !noted.iter().any(|(r, _)| *r == t)
+            && READ_FRAMES.load(Relaxed) < 12
+            && let Some(copy) = crate::resource::host_copy(t as This)
+        {
+            noted.push((t, copy));
         }
     }
 }
@@ -876,7 +878,7 @@ mod tests {
         let last = memory.len() - 1;
         memory[last] = 1;
         assert_eq!(windows_with_data(memory.as_ptr() as u64, memory.len() as u64), 0b101);
-        memory[last / 2 & !0xfff] = 1;
+        memory[(last / 2) & !0xfff] = 1;
         assert_eq!(windows_with_data(memory.as_ptr() as u64, memory.len() as u64), 0b111);
     }
 
