@@ -1989,6 +1989,59 @@ impl HostHeap {
         }
         Some(text)
     }
+
+    /// What this heap knows of the texture view at title slot `index`, for
+    /// the bake probe (`crate::bake_probe`): whether its host slot shows a
+    /// host resource, which, and where the slot stands in the queue of
+    /// textures picked by index. Reads state only.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn probe_slot(&self, index: u32) -> SlotProbe {
+        let host = self
+            .kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(index as usize)
+            .and_then(|k| k.as_ref())
+            .map_or(0, |r| windows::core::Interface::as_raw(r) as usize);
+        let shown = host != 0;
+        let queue = self.textures.lock().unwrap_or_else(|e| e.into_inner());
+        let w = queue.slots.get(&index).copied();
+        SlotProbe {
+            shown,
+            host,
+            queued: w.is_some(),
+            due: w.map_or(0, |w| w.due),
+            written: w.map_or(0, |w| w.written),
+            looks: w.map_or(0, |w| w.looks),
+            changes: w.map_or(0, |w| w.changes),
+            mapped: w.map_or(0, |w| w.mapped),
+            stale: w.is_some_and(|w| w.stale),
+            relook: w.and_then(|w| w.relook).map(|r| (r.print, r.uploaded)),
+        }
+    }
+}
+
+/// What [`HostHeap::probe_slot`] tells of one title slot: its host slot
+/// shows a host resource (`shown`, `host`: its address), and its entry in
+/// the queue of textures picked by index, if it has one: the frame from
+/// which it is due, the frame it was written, the looks that found nothing
+/// to upload, the looks that found its memory changed, the bytes of its
+/// memory that were mapped at its last partial upload, whether a look found
+/// it changed and it waits for an upload, and (for a slot uploaded whole)
+/// the fingerprint of its memory at the upload and the frame of the upload.
+#[cfg(feature = "diagnostics")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SlotProbe {
+    pub(crate) shown: bool,
+    pub(crate) host: usize,
+    pub(crate) queued: bool,
+    pub(crate) due: u64,
+    pub(crate) written: u64,
+    pub(crate) looks: u8,
+    pub(crate) changes: u8,
+    pub(crate) mapped: u64,
+    pub(crate) stale: bool,
+    pub(crate) relook: Option<(u64, u64)>,
 }
 
 /// Logs `what` the first time it happens.

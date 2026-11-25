@@ -1585,24 +1585,106 @@ impl State {
 
     fn early_textures(&self, list: &HostList, p: &HostPipeline, compute: bool) {
         let (early_ms, bake_ms) = early_budgets();
-        if compute || (early_ms == 0 && bake_ms == 0) {
+        let is_bake = !compute
+            && p.stages.iter().any(|s| BAKE_PIXEL_SHADERS.contains(&s.shader.hash.as_str()));
+        if !compute && (early_ms > 0 || bake_ms > 0) {
+            let bake = bake_ms > 0 && is_bake;
+            static FRAME: AtomicU64 = AtomicU64::new(u64::MAX);
+            // The milliseconds this frame's bake draws have taken so far: a
+            // frame has several, and together they get `bake_ms`.
+            static BAKED_MS: AtomicU64 = AtomicU64::new(0);
+            let _ = self.early_textures_with(
+                list,
+                bake,
+                early_ms,
+                bake_ms,
+                crate::frame::current(),
+                &FRAME,
+                &BAKED_MS,
+            );
+        }
+        // After the pass (with the passes off it did not run): what the
+        // bake's data names, as it stands.
+        #[cfg(feature = "diagnostics")]
+        if is_bake {
+            self.probe_bake(p);
+        }
+    }
+
+    /// `VICTORY_BAKE_PROBE=1`: hands the bake probe the memory of the
+    /// buffers this bake draw's tables name, its root constants and its
+    /// root views, with the targets it draws into (`crate::bake_probe`).
+    #[cfg(feature = "diagnostics")]
+    fn probe_bake(&self, p: &HostPipeline) {
+        if !crate::bake_probe::on() {
             return;
         }
-        let bake = bake_ms > 0
-            && p.stages.iter().any(|s| BAKE_PIXEL_SHADERS.contains(&s.shader.hash.as_str()));
-        static FRAME: AtomicU64 = AtomicU64::new(u64::MAX);
-        // The milliseconds this frame's bake draws have taken so far: a
-        // frame has several, and together they get `bake_ms`.
-        static BAKED_MS: AtomicU64 = AtomicU64::new(0);
-        let _ = self.early_textures_with(
-            list,
-            bake,
-            early_ms,
-            bake_ms,
-            crate::frame::current(),
-            &FRAME,
-            &BAKED_MS,
-        );
+        let Some(heap) = self
+            .heaps
+            .iter()
+            .filter(|&&h| h != 0)
+            .map(|&h| crate::descriptor::heap(h as This))
+            .find(|h| !h.samplers())
+        else {
+            return;
+        };
+        let Some(host) = heap.host() else {
+            return;
+        };
+        let pixel = p
+            .stages
+            .iter()
+            .map(|s| s.shader.hash.as_str())
+            .find(|h| BAKE_PIXEL_SHADERS.contains(h))
+            .unwrap_or("");
+        let mut buffers: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut take = |address: u64, len: u64| {
+            if address == 0 || len == 0 || buffers.iter().any(|(a, _)| *a == address) {
+                return;
+            }
+            let len = (len.min(16 << 10) as usize) & !3;
+            let mut bytes = vec![0u8; len];
+            crate::host::copy_mapped(bytes.as_mut_ptr(), address as *const u8, len, false);
+            buffers.push((address, bytes));
+        };
+        let roots = self.roots_ref(false);
+        for stage in &p.stages {
+            for u in &stage.translated().used {
+                if let (RootType::Table, Some(Root::Table(table))) = (u.root, roots.get(usize::from(u.slot))) {
+                    let handle = table + u64::from(u.table_offset_dwords) * 4;
+                    match crate::descriptor::view(handle) {
+                        Some(View::Constant(address, size)) => take(address, u64::from(size)),
+                        Some(view) => {
+                            if let Some((address, len)) = crate::descriptor::host::buffer_range(&view) {
+                                take(address, len);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        for root in roots {
+            if let Root::View(address) = root {
+                take(*address, 4096);
+            }
+        }
+        // The root constants have no address: a made-up one each.
+        for (i, root) in roots.iter().enumerate() {
+            if let Root::Constants(values) = root {
+                let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+                buffers.push((u64::MAX - i as u64, bytes));
+            }
+        }
+        crate::bake_probe::bake(&crate::bake_probe::BakeDraw {
+            frame: crate::frame::current(),
+            pixel,
+            buffers,
+            targets: &self.targets,
+            heap,
+            host,
+            queue: HEAP_TEXTURES_QUEUE.each_ref().map(|c| c.load(Ordering::Relaxed)),
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2014,6 +2096,8 @@ impl State {
                 // next draw that reads the texture through a table stage,
                 // detile and upload all of it once more.
                 HEAP_TEXTURES_TABLED.fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "diagnostics")]
+                crate::bake_probe::uploaded(heap, index, frame, partly.is_some(), true);
                 host.texture_slot_done(index, write, again);
                 continue;
             }
@@ -2031,6 +2115,8 @@ impl State {
             SPENT.fetch_add(bytes, Ordering::Relaxed);
             HEAP_TEXTURE_BYTES.fetch_add(bytes, Ordering::Relaxed);
             HEAP_TEXTURES.fetch_add(1, Ordering::Relaxed);
+            #[cfg(feature = "diagnostics")]
+            crate::bake_probe::uploaded(heap, index, frame, partly.is_some(), false);
             match memory {
                 // Whole and uploaded: looked at again ([`relook_textures`]).
                 Some((at, len)) => {
@@ -3379,6 +3465,8 @@ fn readable(list: &HostList, kind: ResourceType, view: &View) {
     }
     match (view, kind) {
         (View::Shader(resource, words), ResourceType::Srv) => {
+            #[cfg(feature = "diagnostics")]
+            crate::bake_probe::sampled(*resource as This, placed.is_some());
             // A view the title placed, in another format, in the memory of
             // a texture the host writes: that texture's texels, copied on
             // the host (title memory does not have them).

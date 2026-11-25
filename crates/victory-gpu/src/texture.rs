@@ -141,14 +141,30 @@ pub(crate) fn remapped(at: usize, len: usize) {
     let candidates = index
         .range(earliest_start..end)
         .flat_map(|(_, entries)| entries.iter().filter_map(Weak::upgrade));
+    #[cfg(feature = "diagnostics")]
+    let mut examined = 0u64;
     for staging in candidates {
+        #[cfg(feature = "diagnostics")]
+        {
+            examined += 1;
+        }
         // ...of which only those whose memory actually reaches past `at`
         // overlap the remapped range.
         let (start, bytes) = staging.memory();
         if start.saturating_add(bytes) > at {
+            // The bake probe counts the textures this marks, and those of
+            // them that had been found unchanged since their upload.
+            #[cfg(feature = "diagnostics")]
+            crate::bake_probe::remap_hit(
+                start as u64,
+                bytes as u64,
+                staging.uploaded.load(Relaxed) && !staging.dirty.load(Relaxed),
+            );
             staging.dirty.store(true, Relaxed);
         }
     }
+    #[cfg(feature = "diagnostics")]
+    crate::bake_probe::remap_call(examined);
 }
 
 /// The buffer a texture the host writes is copied through into the texture

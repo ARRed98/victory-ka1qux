@@ -1360,6 +1360,148 @@ pub(crate) fn host_made<'a>(
     Some(unsafe { &*std::ptr::from_ref(&host.texture) })
 }
 
+/// What the bake probe (`crate::bake_probe`) needs to know of a title
+/// texture: where its memory is, its description, and what the host has of
+/// it. Nothing here makes a host copy.
+#[cfg(all(windows, feature = "diagnostics"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProbeTexture {
+    pub(crate) start: u64,
+    pub(crate) bytes: u64,
+    pub(crate) width: u64,
+    pub(crate) height: u32,
+    pub(crate) layers: u16,
+    pub(crate) mips: u16,
+    pub(crate) format: u32,
+    pub(crate) flags: u32,
+    /// Whether the title fills it (no target, depth or unordered access).
+    pub(crate) fills: bool,
+    /// Made for a view the title placed in memory ([`texture_at`]).
+    pub(crate) placed: bool,
+    /// The host texture's address (0: none made yet).
+    pub(crate) host: usize,
+    /// The host wrote it by a copy or resolve ([`crate::texture::host_wrote`]).
+    pub(crate) host_wrote: bool,
+}
+
+/// [`ProbeTexture`] of `this`. With `checked` it is looked up in the table
+/// of live textures first (for a pointer the probe kept from earlier, which
+/// the title may have released since); without, `this` is a texture the
+/// caller just got from the title.
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn probe_texture(this: This, checked: bool) -> Option<ProbeTexture> {
+    if this.is_null() {
+        return None;
+    }
+    // Held while the resource is read: a texture leaves the table before it
+    // is freed, under this lock (`Drop for Resource`).
+    let table = textures();
+    if checked && !table.contains(&(this as usize)) {
+        return None;
+    }
+    let r = resource(this);
+    if r.desc.dimension == BUFFER {
+        return None;
+    }
+    // SAFETY: the description's 56 bytes.
+    let words = unsafe { std::ptr::from_ref(&r.desc).cast::<[u32; 14]>().read_unaligned() };
+    let host = r
+        .host
+        .made
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map_or(0, |(h, _)| windows::core::Interface::as_raw(&h.texture) as usize);
+    let out = ProbeTexture {
+        start: r.data() as u64,
+        bytes: placed_bytes(&words).unwrap_or(0),
+        width: r.desc.width,
+        height: r.desc.height,
+        layers: r.desc.depth_or_array_size,
+        mips: r.desc.mip_levels,
+        format: r.desc.format,
+        flags: r.desc.flags,
+        fills: fills(&r.desc),
+        placed: r.host.placed.load(std::sync::atomic::Ordering::Relaxed),
+        host,
+        host_wrote: crate::texture::host_wrote(this as usize),
+    };
+    drop(table);
+    Some(out)
+}
+
+/// For the bake probe: counts over all title textures alive, to find two
+/// copies over the same title memory where the host wrote one of them (the
+/// bake probe's "twin" census): [textures, textures the host renders to or
+/// writes, textures the title fills with a host copy made, memory starts
+/// shared by one of each kind, of those the view texture reads the other by
+/// a copy on the host ([`alias_of`]), of those the view texture's own host
+/// copy was written by a host copy or resolve, textures of the two kinds
+/// that overlap, textures the host wrote by a copy or resolve].
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn probe_census() -> [u64; 8] {
+    // (start, end, title fills it, host copy made, host wrote it, the resource)
+    let table = textures();
+    let mut all: Vec<(u64, u64, bool, bool, bool, usize)> = Vec::with_capacity(table.len());
+    for &at in table.iter() {
+        // SAFETY: held under the table's lock (`Drop for Resource`).
+        let r = unsafe { &*(at as *const Resource) };
+        // SAFETY: the description's 56 bytes.
+        let words = unsafe { std::ptr::from_ref(&r.desc).cast::<[u32; 14]>().read_unaligned() };
+        let start = r.data() as u64;
+        let bytes = placed_bytes(&words).unwrap_or(0);
+        let made = r.host.made.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        all.push((start, start.saturating_add(bytes), fills(&r.desc), made, crate::texture::host_wrote(at), at));
+    }
+    all.sort_unstable();
+    let mut c = [0u64; 8];
+    c[0] = all.len() as u64;
+    c[1] = all.iter().filter(|t| !t.2).count() as u64;
+    c[2] = all.iter().filter(|t| t.2 && t.3).count() as u64;
+    c[7] = all.iter().filter(|t| t.4).count() as u64;
+    let mut i = 0;
+    while i < all.len() {
+        let mut j = i;
+        while j < all.len() && all[j].0 == all[i].0 {
+            j += 1;
+        }
+        let group = &all[i..j];
+        let target = group.iter().any(|t| !t.2);
+        let views: Vec<_> = group.iter().filter(|t| t.2 && t.3).collect();
+        if target && !views.is_empty() {
+            c[3] += 1;
+            for v in &views {
+                if alias_of(v.5 as This).is_some() {
+                    c[4] += 1;
+                }
+                if v.4 {
+                    c[5] += 1;
+                }
+            }
+        }
+        i = j;
+    }
+    // Different starts: the running furthest end of each kind.
+    let (mut target_end, mut fill_end) = (0u64, 0u64);
+    for t in &all {
+        if t.1 <= t.0 {
+            continue;
+        }
+        if t.2 {
+            if t.3 && t.0 < target_end {
+                c[6] += 1;
+            }
+            fill_end = fill_end.max(t.1);
+        } else {
+            if t.0 < fill_end {
+                c[6] += 1;
+            }
+            target_end = target_end.max(t.1);
+        }
+    }
+    c
+}
+
 /// Whether more host copies of textures the title fills may be made for
 /// shaders that pick textures by index (`draw.rs` `heap_textures`): always
 /// up to `FLOOR` bytes of them, beyond that while the card's memory in use
