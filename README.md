@@ -26,8 +26,8 @@ Windows 11, Intel Core i5-13600KF, AMD Radeon RX 7800 XT 16 GB (RDNA3, driver
 | Getting into the world | about 3 minutes from launch, with the caches warm and the movies skipped |
 | The world | drawn from a save: rooms with walls, ceilings and textures, lit by their lamps and by the sun; characters with skin, hair and clothes; exteriors with buildings; HUD and prompts |
 | Play | a 25-minute play session, from the first room on to the next objective, on an earlier build of this branch |
-| Frame rate | about 2 frames a second: 0.40 to 0.60 s a frame, median 0.50 s in the last run |
-| Stability | no crash and no device removal in the last eleven runs (5 to 25 minutes each) |
+| Frame rate | about 2 frames a second with the switches below: 0.40 to 0.60 s a frame, median 0.50 s; about 3.5 with victory-fork's speed defaults (median 0.29 s), at the cost of the characters' colours |
+| Stability | no crash and no device removal in the last thirteen runs (5 to 25 minutes each) |
 | Memory | about 11 GB of the card's 16 and 6 GB of the PC's memory shared with it (13.7 and 14.9 GB before the texture fix below) |
 
 Known problems:
@@ -173,9 +173,11 @@ target\diag\victory.exe run "$g\<the title's exe>" --execute
 ```
 
 The last three lines of switches turn off victory-fork's newer speed defaults
-(sending submissions ahead of the card). They are faster on their author's
-machine; on this card an earlier version of them cost characters their skin,
-and they have not been measured again here.
+(sending submissions ahead of the card). Measured on this card with this build,
+they bring a frame from a median of 0.50 s down to 0.29 s (0.17 s at best),
+with no failure in a run, but the characters' uniforms then lose their colour
+(black cloth instead of orange) and skin turns greenish in places. Leave the
+three lines out if speed matters more than that.
 
 Input: XInput pads; with none connected the keyboard is a pad while the
 title's window has focus. Commands, the full list of switches and debugging
