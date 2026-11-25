@@ -1832,17 +1832,38 @@ impl Deferred {
     /// list resets do not free and reallocate `Vec`/`HashSet` storage every
     /// frame.
     fn clear(&mut self) {
-        ALIVE[6].fetch_sub(self.uploads.len() as u64, Ordering::Relaxed);
-        ALIVE[7].fetch_sub(self.upload_bytes, Ordering::Relaxed);
-        self.upload_bytes = 0;
-        self.copies.clear();
-        self.uploads.clear();
-        self.kept.clear();
-        self.refreshed.clear();
-        self.textures.clear();
-        self.writes.clear();
-        self.backs.clear();
-        self.budget_zeroed = false;
+        // Every field, by name: one left out here keeps what it holds for as
+        // long as the list lives. `texture_uploads` was (the textures a list
+        // uploads in its prelude came with one change, this function with
+        // another): each list kept every host texture and staging buffer it
+        // had ever uploaded, so no idle texture was let go
+        // (`resource::let_go_idle` wants the title texture to be the only
+        // holder), the card filled within minutes, and the textures picked
+        // by index after that were never made (some 10,000 waiting a run).
+        let Self {
+            copies,
+            uploads,
+            upload_bytes,
+            kept,
+            refreshed,
+            textures,
+            texture_uploads,
+            writes,
+            backs,
+            budget_zeroed,
+        } = self;
+        ALIVE[6].fetch_sub(uploads.len() as u64, Ordering::Relaxed);
+        ALIVE[7].fetch_sub(*upload_bytes, Ordering::Relaxed);
+        *upload_bytes = 0;
+        copies.clear();
+        uploads.clear();
+        kept.clear();
+        refreshed.clear();
+        textures.clear();
+        texture_uploads.clear();
+        writes.clear();
+        backs.clear();
+        *budget_zeroed = false;
     }
 }
 
