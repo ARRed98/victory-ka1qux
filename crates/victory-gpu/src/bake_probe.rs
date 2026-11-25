@@ -33,7 +33,10 @@
 //! - **The result** (`bake probe: a bake target after the frame`): after
 //!   the frames in which a bake ran, each target is read back and its
 //!   256x256 blocks that hold any colour are counted, with a hash, to tell
-//!   a good launch from a bad one by number.
+//!   a good launch from a bad one by number. So is a texture a draw writes
+//!   through an unordered access view that has the shape of a target (the
+//!   compute pass after a bake draw reads a target and writes a texture of
+//!   its own: the one materials may read).
 //! - **Two copies of one memory** (`bake probe: census`): every 128 frames,
 //!   the title textures that share their memory with a texture the host
 //!   writes, and whether the host reads that one by a copy.
@@ -233,6 +236,12 @@ static TARGETS: Mutex<Option<std::collections::BTreeMap<u64, (u64, usize)>>> = M
 /// present.
 static NOTED: Mutex<Vec<(usize, Arc<crate::resource::HostTexture>)>> = Mutex::new(Vec::new());
 
+/// The shapes (width, height, format) of the textures a bake draws into: a
+/// texture a later draw writes through an unordered access view that has
+/// one of them is taken for the bake's output ([`written`]): the bake's
+/// compute pass reads a target and writes a texture of its own.
+static SHAPES: Mutex<Vec<(u64, u32, u32)>> = Mutex::new(Vec::new());
+
 static BAKE_COUNT: AtomicU64 = AtomicU64::new(0);
 static BAKED_THIS_FRAME: AtomicBool = AtomicBool::new(false);
 static READ_FRAMES: AtomicU64 = AtomicU64::new(0);
@@ -413,6 +422,13 @@ fn note_targets(n: u64, d: &BakeDraw) {
         if info.bytes == 0 {
             continue;
         }
+        {
+            let mut shapes = SHAPES.lock().unwrap_or_else(|e| e.into_inner());
+            let shape = (info.width, info.height, info.format);
+            if !shapes.contains(&shape) && shapes.len() < 16 {
+                shapes.push(shape);
+            }
+        }
         let new = map.insert(info.start, (info.start + info.bytes, t)).is_none_or(|(_, was)| was != t);
         if new || n <= 2 {
             tracing::info!(
@@ -437,6 +453,50 @@ fn note_targets(n: u64, d: &BakeDraw) {
                 noted.push((t, copy));
             }
         }
+    }
+}
+
+/// A draw or dispatch writes the texture `resource` through an unordered
+/// access view (`readable`): if it has the shape of a bake's target and is
+/// not one, it is noted for the read-back at the present as a texture the
+/// bake leaves (the compute pass that follows a bake draw reads a target and
+/// writes such a texture), and its description is logged once.
+pub(crate) fn written(resource: This) {
+    if !on() || BAKE_COUNT.load(Relaxed) == 0 || READ_FRAMES.load(Relaxed) >= 12 {
+        return;
+    }
+    let Some(t) = crate::resource::probe_texture(resource, false) else {
+        return;
+    };
+    let shape = (t.width, t.height, t.format);
+    if !SHAPES.lock().unwrap_or_else(|e| e.into_inner()).contains(&shape) {
+        return;
+    }
+    if TARGETS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|m| m.values().any(|&(_, r)| r == resource as usize))
+    {
+        return;
+    }
+    let mut noted = NOTED.lock().unwrap_or_else(|e| e.into_inner());
+    if noted.len() >= 8 || noted.iter().any(|(r, _)| *r == resource as usize) {
+        return;
+    }
+    if let Some(copy) = crate::resource::host_copy(resource) {
+        noted.push((resource as usize, copy));
+        tracing::info!(
+            frame = crate::frame::current(),
+            resource = format_args!("{:#x}", resource as usize),
+            address = format_args!("{:#x}", t.start),
+            width = t.width,
+            height = t.height,
+            format = t.format,
+            flags = format_args!("{:#x}", t.flags),
+            host = format_args!("{:#x}", t.host),
+            "bake probe: a texture written through an unordered access view has the shape of a bake target: noted for the read-back"
+        );
     }
 }
 
